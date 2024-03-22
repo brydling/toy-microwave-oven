@@ -48,15 +48,18 @@ struct clock_type {
 auto timer = timer_create_default();
 
 timer_type timerVal = { 0, 0 };
-clock_type clock = { 14, 14, 5 };
-timer_type display = { 0, 0 };
-enum state_type { STANDBY, STOPPED, RUNNING, BEEPING };
+clock_type clock = { 16, 46, 00 };
+enum state_type { UNDEF, STANDBY, STOPPED, RUNNING, BEEPING };
 state_type state = STANDBY;
+
+TM1637Display disp(DISP_CLK_PIN, DISP_DIO_PIN);
 
 typedef uint16_t tick_type;
 tick_type ticks = 0;
 
 Encoder enc(ENC_1_PINS[0], ENC_1_PINS[1]);
+
+bool enc_btn_edge = false;
 
 #define TICK_FREQ 20ul
 #define FREQ_TO_MS(F) (1000ul/F)
@@ -83,15 +86,15 @@ void setup() {
   timer.every(1000, update_clock);
 }
 
+
 // the loop function runs over and over again forever
 void loop() {
   timer.tick();
 }
 
-bool step(void* arg) {
-  static bool first = true;
 
-  state_type prev_state = state;
+bool step(void* arg) {
+  static state_type prev_state = UNDEF;
   state_type next_state = state;
 
   ticks++;
@@ -99,20 +102,17 @@ bool step(void* arg) {
   bool rerun = false;
 
   do {
+    enc_btn_edge = read_btn_edge();
+
     rerun = false;
 
     switch(state) {
       case STANDBY:
         next_state = state_standby(prev_state);
         break;
+
       case STOPPED:
         next_state = state_stopped(prev_state);
-        /*if(first) {
-          timerVal.sec = 0;
-          timerVal.min = 0;
-          //next_state = RUNNING;
-          first = false;
-        }*/
         break;
 
       case RUNNING:
@@ -134,12 +134,12 @@ bool step(void* arg) {
   } while(rerun);
 
   led_bar_update(state == RUNNING);
-  display_update(state == RUNNING);
 
   analogWrite(LIGHT_PIN, (digitalRead(DOOR_SWITCH_PIN) || state == RUNNING) ? LIGHT_BRIGHTNESS : 0);
 
   return true;
 }
+
 
 state_type state_standby(state_type prev_state) {
   state_type next_state = state;
@@ -147,71 +147,57 @@ state_type state_standby(state_type prev_state) {
   if(state != prev_state) {
     timerVal.min = 0;
     timerVal.sec = 0;
+
+    disp.setBrightness(DISPLAY_BRIGHTNESS_STANDBY);
   }
 
-  if(!digitalRead(ENC_1_BTN_PIN) || abs(enc.read()) >= 4) {
+  if(enc_btn_edge || abs(enc.read()) >= 4) {
     next_state = STOPPED;
   }
 
-  display.min = clock.hr;
-  display.sec = clock.min;
+  disp.showNumberDecEx(((int)clock.hr)*100+clock.min, 0x40, true);
 
   return next_state;
 }
 
+
 state_type state_stopped(state_type prev_state) {
-  static uint32_t stopped_timer = 0;
+  static uint32_t standby_timer = 0;
 
   int32_t knob = -read_encoder()*TIMER_SMALLEST_STEP;
   state_type next_state = state;
 
   if(state != prev_state) {
     digitalWrite(RELAY_PIN, 0);
-    stopped_timer = 0;
+    standby_timer = 0;
+    disp.setBrightness(DISPLAY_BRIGHTNESS);
   }
 
-  if(!digitalRead(ENC_1_BTN_PIN) && (timerVal.min > 0 || timerVal.sec > 0)) {
+  if(enc_btn_edge && (timerVal.min > 0 || timerVal.sec > 0)) {
     next_state = RUNNING;
   } else {
     if(knob != 0) {
-      stopped_timer = 0;
-      if(knob > 0) {
-        if(timerVal.sec + knob > 59) {
-          timerVal.min++;
-          timerVal.sec = knob - (60 - timerVal.sec);
-        } else {
-          timerVal.sec += knob;
-        }
-      } else if(knob < 0) {
-        if(((int8_t) timerVal.sec) + knob < 0) {
-          if(timerVal.min == 0) {
-            timerVal.sec = 0;
-          } else {
-            timerVal.min--;
-            timerVal.sec = 60 - (-knob - timerVal.sec);
-          }
-        } else {
-          timerVal.sec += knob;
-        }
-      }
+      standby_timer = 0;
+      timer_change(knob);
     } else {
-      stopped_timer++;
+      standby_timer++;
 
-      if(stopped_timer == STANDBY_TIMEOUT) {
+      if(standby_timer == STANDBY_TIMEOUT) {
         next_state = STANDBY;
       }
     }
   }
 
-  display.min = timerVal.min;
-  display.sec = timerVal.sec;
+  disp.showNumberDecEx(((int)timerVal.min)*100+timerVal.sec, 0x40, true);
 
   return next_state;
 }
 
+
 state_type state_running(state_type prev_state) {
   static tick_type next_countdown;
 
+  int32_t knob = -read_encoder()*TIMER_SMALLEST_STEP;
   state_type next_state = state;
 
   if(digitalRead(DOOR_SWITCH_PIN)) {
@@ -233,23 +219,26 @@ state_type state_running(state_type prev_state) {
       } else {
         // if this happens, something is wrong
       }
+    }
 
-      if(timerVal.min == 0 && timerVal.sec == 0) {
-        next_state = BEEPING;
-      }
+    timer_change(knob);
+
+    if(timerVal.min == 0 && timerVal.sec == 0) {
+      next_state = BEEPING;
     }
   }
 
-  display.min = timerVal.min;
-  display.sec = timerVal.sec;
+  disp.showNumberDecEx(((int)timerVal.min)*100+timerVal.sec, 0x40, true);
 
   return next_state;
 }
+
 
 state_type state_beeping(state_type prev_state) {
   static uint8_t beeps;
   static tick_type next_beep;
 
+  int32_t knob = -read_encoder()*TIMER_SMALLEST_STEP;
   state_type next_state = state;
 
   if(state != prev_state) {
@@ -261,18 +250,24 @@ state_type state_beeping(state_type prev_state) {
     digitalWrite(RELAY_PIN, 0);
   }
 
-  if(ticks == next_beep) {
+  if(beeps > 0 && ticks == next_beep) {
     next_beep = ticks + MS_TO_TICKS(BEEP_PERIOD_MS);
     tone(SPEAKER_PIN, BEEP_FREQ, BEEP_LENGTH_MS);
     beeps--;
   }
 
-  if(beeps == 0) {
-    next_state = STOPPED;
+  if(enc_btn_edge || digitalRead(DOOR_SWITCH_PIN) || knob != 0) {
+    next_state = STANDBY;
   }
+
+  uint8_t zero = disp.encodeDigit(0);
+  uint8_t colon_bitmask = 0x80;
+  uint8_t segments[4] = { 0, colon_bitmask | 0, 0, zero }; // digits 0 1:2 3, colon is bit 7 on digit 1
+  disp.setSegments(segments, 4, 0);
 
   return next_state;
 }
+
 
 void led_bar_init() {
   for(int i = 0; i < sizeof(LED_BAR_PINS); i++) {
@@ -280,6 +275,30 @@ void led_bar_init() {
     digitalWrite(LED_BAR_PINS[i], 1);
   }
 }
+
+
+void timer_change(int32_t knob) {
+  if(knob > 0) {
+    if(timerVal.sec + knob > 59) {
+      timerVal.min++;
+      timerVal.sec = knob - (60 - timerVal.sec);
+    } else {
+      timerVal.sec += knob;
+    }
+  } else if(knob < 0) {
+    if(((int8_t) timerVal.sec) + knob < 0) {
+      if(timerVal.min == 0) {
+        timerVal.sec = 0;
+      } else {
+        timerVal.min--;
+        timerVal.sec = 60 - (-knob - timerVal.sec);
+      }
+    } else {
+      timerVal.sec += knob;
+    }
+  }
+}
+
 
 void led_bar_update(bool flash) {
   const uint8_t STEP = LED_BAR_STEP;
@@ -299,7 +318,8 @@ void led_bar_update(bool flash) {
 
 
   if(flash) {
-    num_lit--;
+    if(num_lit > 0)
+      num_lit--;
 
     if(!flash_last || (num_lit < num_lit_last)) {
       init_new_flashing = true;
@@ -334,6 +354,7 @@ void led_bar_update(bool flash) {
   flash_last = flash;
 }
 
+
 int8_t read_encoder() {
   static int32_t counter = 0;
 
@@ -347,34 +368,24 @@ int8_t read_encoder() {
   return ret;
 }
 
-void display_update(bool flash) {
-  static TM1637Display disp(DISP_CLK_PIN, DISP_DIO_PIN);
-  static tick_type next_toggle;
-  static bool toggle = false;
-  static bool flash_last = false;
 
-  if(flash) {
-    if(!flash_last) {
-      toggle = false; // start with it black
-      next_toggle = ticks;
+bool read_btn_edge() {
+  static bool last = false;
+
+  bool edge = false;
+
+  if(!digitalRead(ENC_1_BTN_PIN)) {
+    if(!last) {
+      edge = true;
     }
-
-    if(ticks == next_toggle) {
-      next_toggle = ticks + MS_TO_TICKS(BLINK_MS);
-      toggle = !toggle;
-    }
-  }
-
-  if(state == STANDBY) {
-    disp.setBrightness(DISPLAY_BRIGHTNESS_STANDBY);
+    last = true;
   } else {
-    disp.setBrightness(DISPLAY_BRIGHTNESS);
+    last = false;
   }
-  
-  disp.showNumberDecEx(((int)display.min)*100+display.sec, (flash&&toggle) ? 0x00 : 0x40, true);
 
-  flash_last = flash;
+  return edge;
 }
+
 
 void update_clock() {
   if(++clock.sec == 60) {
