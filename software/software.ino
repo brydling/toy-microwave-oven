@@ -11,6 +11,8 @@
 
 #define TIMER_SMALLEST_STEP 2
 
+#define CLOCK_CALIBRATION +1920 // add a second every 1920 seconds, set negative to remove a second instead
+
 #define BEEP_NUM 3
 #define BEEP_PERIOD_MS 1000ul
 #define BEEP_LENGTH_MS 160ul
@@ -48,7 +50,8 @@ struct clock_type {
 auto timer = timer_create_default();
 
 timer_type timerVal = { 0, 0 };
-clock_type clock = { 16, 46, 00 };
+clock_type clock = { 22, 30, 30 }; // set the time
+
 enum state_type { UNDEF, STANDBY, STOPPED, RUNNING, BEEPING };
 state_type state = STANDBY;
 
@@ -67,6 +70,11 @@ bool enc_btn_edge = false;
 #define MS_TO_TICKS(MS) ((tick_type) MS*TICK_FREQ/1000ul)
 
 #define STANDBY_TIMEOUT MS_TO_TICKS(60000)
+
+
+template <typename T> int sgn(T val) {
+    return (T(0) < val) - (val < T(0));
+}
 
 
 // the setup function runs once when you press reset or power the board
@@ -388,6 +396,19 @@ bool read_btn_edge() {
 
 
 void update_clock() {
+  static uint16_t calibration_counter = 0;
+  static bool do_calibration = false;
+
+  if(++calibration_counter == abs(CLOCK_CALIBRATION)) {
+    do_calibration = true;
+    calibration_counter = 0;
+  }
+
+  if(do_calibration && clock.sec != 0 && clock.sec != 59) {
+    clock.sec += sgn(CLOCK_CALIBRATION);
+    do_calibration = false;
+  }
+
   if(++clock.sec == 60) {
     clock.sec = 0;
     if(++clock.min == 60) {
