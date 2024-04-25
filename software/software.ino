@@ -50,7 +50,7 @@ struct clock_type {
 auto timer = timer_create_default();
 
 timer_type timerVal = { 0, 0 };
-clock_type clock = { 22, 30, 30 }; // set the time
+clock_type clock = { 8, 0, 0 }; // set the time
 
 enum state_type { UNDEF, STANDBY, STOPPED, RUNNING, BEEPING };
 state_type state = STANDBY;
