@@ -1,4 +1,5 @@
 /*
+ * Requires the 3rd patry libraries arduino-timer, encoder and TM1637
 */
 
 #include <arduino-timer.h>
@@ -50,9 +51,9 @@ struct clock_type {
 auto timer = timer_create_default();
 
 timer_type timerVal = { 0, 0 };
-clock_type clock = { 8, 0, 0 }; // set the time
+clock_type clock = { 12, 0, 0 }; // set the clock
 
-enum state_type { UNDEF, STANDBY, STOPPED, RUNNING, BEEPING };
+enum state_type { UNDEF, STANDBY, STOPPED, RUNNING, BEEPING, CLOCK_SET };
 state_type state = STANDBY;
 
 TM1637Display disp(DISP_CLK_PIN, DISP_DIO_PIN);
@@ -130,6 +131,10 @@ bool step(void* arg) {
       case BEEPING:
         next_state = state_beeping(prev_state);
         break;
+
+      case CLOCK_SET:
+        next_state = state_clock_set(prev_state);
+        break;
     }
 
     prev_state = state;
@@ -171,6 +176,8 @@ state_type state_standby(state_type prev_state) {
 
 state_type state_stopped(state_type prev_state) {
   static uint32_t standby_timer = 0;
+  static uint32_t btn_timer = 0;
+  static bool btn_timer_active = false;
 
   int32_t knob = -read_encoder()*TIMER_SMALLEST_STEP;
   state_type next_state = state;
@@ -181,8 +188,19 @@ state_type state_stopped(state_type prev_state) {
     disp.setBrightness(DISPLAY_BRIGHTNESS);
   }
 
-  if(enc_btn_edge && (timerVal.min > 0 || timerVal.sec > 0)) {
+  if(btn_timer_active) {
+    if(!digitalRead(ENC_1_BTN_PIN)) {
+      if(++btn_timer == TICK_FREQ*2) { // 2 sec
+        next_state = CLOCK_SET;
+      }
+    } else {
+      btn_timer_active = false;
+    }
+  } else if(enc_btn_edge && (timerVal.min > 0 || timerVal.sec > 0)) {
     next_state = RUNNING;
+  } else if(enc_btn_edge && timerVal.min == 0 && timerVal.sec == 0) {
+    btn_timer_active = true;
+    btn_timer = 0;
   } else {
     if(knob != 0) {
       standby_timer = 0;
@@ -272,6 +290,81 @@ state_type state_beeping(state_type prev_state) {
   uint8_t colon_bitmask = 0x80;
   uint8_t segments[4] = { 0, colon_bitmask | 0, 0, zero }; // digits 0 1:2 3, colon is bit 7 on digit 1
   disp.setSegments(segments, 4, 0);
+
+  return next_state;
+}
+
+
+state_type state_clock_set(state_type prev_state) {
+  static bool set_hours = true;
+  static int8_t hours = 0;
+  static int8_t minutes = 0;
+  static uint8_t blink_counter = 0;
+
+  state_type next_state = state;
+
+  if(state != prev_state) {
+    set_hours = true;
+    hours = clock.hr;
+    minutes = clock.min;
+    blink_counter = 0;
+  }
+
+  auto enc = -read_encoder();
+  int8_t active_val;
+  int8_t max;
+
+  if(set_hours) {
+    active_val = hours;
+    max = 23;
+  } else {
+    active_val = minutes;
+    max = 59;
+  }
+
+  active_val += enc;
+
+  if(active_val < 0) {
+    active_val += max+1;
+  } else if(active_val > max) {
+    active_val -= max+1;
+  }
+
+  if(set_hours) {
+    hours = active_val;
+  } else {
+    minutes = active_val;
+  }
+
+  if(enc_btn_edge) {
+    if(set_hours) {
+      set_hours = false;
+    } else {
+      clock.hr = hours;
+      clock.min = minutes;
+      clock.sec = 0;
+      next_state = STANDBY;
+    }
+  }
+
+  if(blink_counter % 16 >= 8) {
+    uint8_t colon_bitmask = 0x80;
+    if(set_hours) {
+      uint8_t segments[2] = { 0, colon_bitmask | 0 }; // digits 0 1:2 3, colon is bit 7 on digit 1
+      disp.setSegments(segments, 2, 0);
+
+      disp.showNumberDec(minutes, true, 2, 2);
+    } else {
+      uint8_t segments[2] = { 0, 0 };
+      disp.setSegments(segments, 2, 2);
+
+      disp.showNumberDec(hours, true, 2, 0);
+    }
+  } else {
+    disp.showNumberDecEx(((int)hours)*100+minutes, 0x40, true);
+  }
+
+  blink_counter++;
 
   return next_state;
 }
